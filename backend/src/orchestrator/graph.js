@@ -13,6 +13,7 @@ async function fraudToolNode(state) {
     imageBase64: state.rawInput.imageBase64,
     mimeType: state.rawInput.mimeType,
     claimedDamageText: state.rawInput.text,
+    images: state.rawInput.images || [],
   });
   await appendTraceStep(state.sessionId, { step: "fraud_verification", output: fraudResult });
   return { ...state, fraudResult, fraudBlocked: fraudResult.shortCircuited };
