@@ -4,7 +4,7 @@ import { node2DialectNeutralExtraction } from "./nodes/node2_dialect_neutral_ext
 import { node3SeverityPayoutScorer } from "./nodes/node3_severity_payout_scorer/index.js";
 import { verifyClaimEvidence } from "../tools/fraud_verification/index.js";
 import { enforceParityGate } from "../middleware/prismSafety.js";
-import { initTrace, appendTraceStep, closeTrace } from "../config/prism.js";
+import { closeTrace } from "../config/prism.js";
 import { initialState } from "./state.js";
 
 async function fraudToolNode(state) {
@@ -14,8 +14,8 @@ async function fraudToolNode(state) {
     mimeType: state.rawInput.mimeType,
     claimedDamageText: state.rawInput.text,
     images: state.rawInput.images || [],
+    sessionId: state.sessionId,
   });
-  await appendTraceStep(state.sessionId, { step: "fraud_verification", output: fraudResult });
   return { ...state, fraudResult, fraudBlocked: fraudResult.shortCircuited };
 }
 
@@ -26,22 +26,11 @@ async function parityGateNode(state) {
     extractedParams: state.extracted,
     proposedPayout: state.payout,
   });
-  await appendTraceStep(state.sessionId, { step: "parity_gate", output: gateResult });
   return {
     ...state,
     parityGate: gateResult,
     status: gateResult.blocked ? "flagged" : "verified",
   };
-}
-
-async function scoringNode(state) {
-  const nextState = node3SeverityPayoutScorer(state);
-  await appendTraceStep(state.sessionId, {
-    step: "severity_payout_scoring",
-    model: "verity-scoring-engine",
-    output: { severity: nextState.severity, payout: nextState.payout, status: nextState.status },
-  });
-  return nextState;
 }
 
 export function buildGraph() {
@@ -50,7 +39,7 @@ export function buildGraph() {
   graph.addNode("ingest", node1RawIngestion);
   graph.addNode("extract", node2DialectNeutralExtraction);
   graph.addNode("fraudCheck", fraudToolNode);
-  graph.addNode("score", scoringNode);
+  graph.addNode("score", node3SeverityPayoutScorer);
   graph.addNode("parityGateCheck", parityGateNode);
 
   graph.setEntryPoint("ingest");
@@ -64,6 +53,7 @@ export function buildGraph() {
 }
 
 export async function runTriagePipeline(rawInput) {
+  const startTime = Date.now();
   const app = buildGraph();
   const sessionId = rawInput.sessionId || crypto.randomUUID();
   const startState = {
@@ -74,11 +64,20 @@ export async function runTriagePipeline(rawInput) {
       submittedAt: new Date().toISOString(),
     },
   };
-  await initTrace(sessionId, rawInput);
+
   const finalState = await app.invoke(startState);
+  const totalLatencyMs = Date.now() - startTime;
+
   await closeTrace(finalState.sessionId || sessionId, {
     status: finalState.status,
+    severity: finalState.severity,
     payout: finalState.payout,
+    totalLatencyMs,
+    fraudRiskScore: finalState.fraudResult?.fraudRiskScore,
+    riskCategory: finalState.fraudResult?.riskCategory,
+    parityPass: finalState.parityGate?.evalResult?.pass,
+    inputSummary: rawInput.text,
   });
+
   return finalState;
 }

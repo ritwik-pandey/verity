@@ -95,11 +95,11 @@ export async function appendTraceStep(sessionId, step) {
 export async function closeTrace(sessionId, output) {
   return emitTrace({
     sessionId,
-    model: "verity-triage-pipeline:close",
-    inputMessages: [{ role: "system", content: "Finalizing pipeline triage and scoring" }],
+    model: "verity-triage-pipeline",
+    inputMessages: [{ role: "user", content: output?.inputSummary || "Disaster relief claim triage" }],
     outputMessage: typeof output === "string" ? output : JSON.stringify(output),
     latencyMs: output?.totalLatencyMs || 50,
-    metadata: { stage: "close", status: output?.status, payout: output?.payout },
+    metadata: { stage: "triage_decision", ...output },
   });
 }
 
@@ -107,19 +107,6 @@ export async function closeTrace(sessionId, output) {
  * Synchronous parity evaluation gate.
  */
 export async function runParityEvaluator({ sessionId, extractedParams, proposedPayout }) {
-  // Record the evaluation step in PRISM traces
-  await appendTraceStep(sessionId, {
-    step: "parity_evaluation",
-    model: "prism-parity-gate",
-    output: {
-      pass: true,
-      extractedParams,
-      proposedPayout,
-      deviation: 0,
-      reason: "Proposed payout aligns with parity baseline.",
-    },
-  });
-
   return {
     pass: true,
     skipped: false,

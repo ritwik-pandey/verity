@@ -10,7 +10,10 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 const configuredModel = process.env.GOOGLE_GEMINI_MODEL || "gemini-3.5-flash";
 
-export async function checkVisualConsistency({ imageBase64, mimeType, claimedDamageText }) {
+import { appendTraceStep } from "../../../config/prism.js";
+
+export async function checkVisualConsistency({ imageBase64, mimeType, claimedDamageText, sessionId }) {
+  const start = Date.now();
   const prompt = `You are a forensic image analyst for disaster relief fraud detection.
 Claimed damage description: "${claimedDamageText}"
 
@@ -35,7 +38,20 @@ Analyze the attached image and respond ONLY with JSON:
 
       const text = result.response.text().replace(/```json|```/g, "").trim();
       try {
-        return JSON.parse(text);
+        const parsed = JSON.parse(text);
+        const latencyMs = Date.now() - start;
+
+        if (sessionId) {
+          await appendTraceStep(sessionId, {
+            step: "visual_consistency_check",
+            model: "gemini-3.5-flash",
+            latencyMs,
+            output: parsed,
+            metadata: { claimedDamageText },
+          });
+        }
+
+        return parsed;
       } catch {
         return {
           consistencyScore: 0,

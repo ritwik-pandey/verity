@@ -85,7 +85,7 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export async function verifyClaimEvidence({ imageBuffer, imageBase64, mimeType, claimedDamageText, images = [] }) {
+export async function verifyClaimEvidence({ imageBuffer, imageBase64, mimeType, claimedDamageText, images = [], sessionId }) {
   const evidencePhotos = normalizeEvidencePhotos({ imageBuffer, imageBase64, mimeType, images });
 
   if (evidencePhotos.length === 0) {
@@ -132,6 +132,7 @@ export async function verifyClaimEvidence({ imageBuffer, imageBase64, mimeType, 
       imageBase64: evidencePhotos[0].imageBase64,
       mimeType: evidencePhotos[0].mimeType,
       claimedDamageText,
+      sessionId,
     }),
   ]);
 
