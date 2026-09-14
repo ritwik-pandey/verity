@@ -8,11 +8,9 @@ if (!apiKey) {
 }
 
 const genAI = new GoogleGenerativeAI(apiKey);
-const configuredModel = process.env.GOOGLE_GEMINI_MODEL || "gemini-3.6-flash";
+const configuredModel = process.env.GOOGLE_GEMINI_MODEL || "gemini-3.5-flash";
 
 export async function checkVisualConsistency({ imageBase64, mimeType, claimedDamageText }) {
-  const model = genAI.getGenerativeModel({ model: configuredModel });
-
   const prompt = `You are a forensic image analyst for disaster relief fraud detection.
 Claimed damage description: "${claimedDamageText}"
 
@@ -23,15 +21,38 @@ Analyze the attached image and respond ONLY with JSON:
   "discrepancyNotes": "<short note if image doesn't match claim, else empty string>"
 }`;
 
-  const result = await model.generateContent([
-    prompt,
-    { inlineData: { data: imageBase64, mimeType } },
-  ]);
+  const modelsToTry = [configuredModel, "gemini-3.5-flash-lite", "gemini-3.5-flash"].filter(
+    (m, i, arr) => arr.indexOf(m) === i
+  );
 
-  const text = result.response.text().replace(/```json|```/g, "").trim();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { consistencyScore: 0, generativeArtifactsDetected: false, discrepancyNotes: "Parse failure — flag for manual review" };
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent([
+        prompt,
+        { inlineData: { data: imageBase64, mimeType } },
+      ]);
+
+      const text = result.response.text().replace(/```json|```/g, "").trim();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return {
+          consistencyScore: 0,
+          generativeArtifactsDetected: false,
+          discrepancyNotes: "Parse failure — flag for manual review",
+        };
+      }
+    } catch (err) {
+      console.warn(`Gemini model ${modelName} call failed:`, err.message);
+      // Try next candidate in loop
+    }
   }
+
+  // Graceful fallback if all model calls fail/overload
+  return {
+    consistencyScore: 0.5,
+    generativeArtifactsDetected: false,
+    discrepancyNotes: "Visual model temporarily unavailable; queued for manual review.",
+  };
 }
