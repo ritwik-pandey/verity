@@ -90,10 +90,10 @@ export async function verifyClaimEvidence({ imageBuffer, imageBase64, mimeType, 
 
   if (evidencePhotos.length === 0) {
     return {
-      fraudRiskScore: 1,
-      riskCategory: "HARD_BLOCK",
-      shortCircuited: true,
-      validationFlags: ["No evidence images were supplied for fraud verification"],
+      fraudRiskScore: 0.35,
+      riskCategory: "FLAG_MANUAL_REVIEW",
+      shortCircuited: false,
+      validationFlags: ["No evidence photo attached — queued for field inspection"],
       layers: { exif: null, webDetection: null, visualConsistency: null },
     };
   }

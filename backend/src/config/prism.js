@@ -10,6 +10,8 @@ const PRISM_PROJECT_ID = process.env.PRISMTRACE_PROJECT_ID || process.env.PRISM_
 
 const PRISM_ENABLED = Boolean(PRISM_API_KEY && PRISM_PROJECT_ID);
 
+let warnedPrismDown = false;
+
 /**
  * Emit a trace event directly to PRISM HTTP ingest endpoint.
  */
@@ -50,17 +52,25 @@ export async function emitTrace({
         "X-PRISMtrace-Key": PRISM_API_KEY,
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(1200),
     });
 
     if (!res.ok) {
       const text = await res.text();
-      console.warn(`[PRISM] Trace submission failed: ${res.status} ${text}`);
+      if (!warnedPrismDown) {
+        console.warn(`\x1b[33m[PRISM Tracing] Remote trace server returned ${res.status} (${text.trim()}). (Local agent console telemetry active)\x1b[0m`);
+        warnedPrismDown = true;
+      }
       return { skipped: true, error: text };
     }
 
     return await res.json();
   } catch (error) {
-    console.warn(`[PRISM] Trace submission error:`, error.message);
+    if (!warnedPrismDown) {
+      const detail = error.name === "TimeoutError" ? "connection timed out" : error.message;
+      console.warn(`\x1b[33m[PRISM Tracing] Remote trace server unreachable (${detail}). Continuing pipeline with local agent telemetry.\x1b[0m`);
+      warnedPrismDown = true;
+    }
     return { skipped: true, error: error.message };
   }
 }

@@ -1,39 +1,49 @@
 import { runTriagePipeline } from "../orchestrator/graph.js";
 import { supabase } from "../config/supabase.js";
+import { logDispatcherAction } from "../utils/agentLogger.js";
 
 export async function submitClaim(req, res) {
   try {
     const { text, imageBase64, mimeType, claimedCoords, images, isTestTrace } = req.body;
 
-    if (!text || (!imageBase64 && !(Array.isArray(images) && images.length > 0))) {
-      return res.status(400).json({ error: "text and at least one image are required" });
+    if (!text?.trim()) {
+      return res.status(400).json({ error: "Claim text description is required" });
     }
 
-    const normalizedImages = Array.isArray(images) && images.length > 0
-      ? images.map((entry) => ({
-          imageBase64: entry.imageBase64 || entry.base64,
-          mimeType: entry.mimeType || mimeType || "image/jpeg",
-        }))
-      : Array.isArray(imageBase64)
-        ? imageBase64.map((entry) => ({
-            imageBase64: typeof entry === "string" ? entry : entry.imageBase64,
-            mimeType: typeof entry === "string" ? mimeType || "image/jpeg" : entry.mimeType || mimeType || "image/jpeg",
-          }))
-        : [{ imageBase64, mimeType: mimeType || "image/jpeg" }];
+    const hasImage = Boolean(imageBase64 || (Array.isArray(images) && images.length > 0));
+    let normalizedImages = [];
+    let primaryImage = null;
+    let imageBuffer = null;
 
-    const primaryImage = normalizedImages[0];
-    const imageBuffer = Buffer.from(primaryImage.imageBase64, "base64");
+    if (hasImage) {
+      normalizedImages = Array.isArray(images) && images.length > 0
+        ? images.map((entry) => ({
+            imageBase64: entry.imageBase64 || entry.base64,
+            mimeType: entry.mimeType || mimeType || "image/jpeg",
+          }))
+        : Array.isArray(imageBase64)
+          ? imageBase64.map((entry) => ({
+              imageBase64: typeof entry === "string" ? entry : entry.imageBase64,
+              mimeType: typeof entry === "string" ? mimeType || "image/jpeg" : entry.mimeType || mimeType || "image/jpeg",
+            }))
+          : [{ imageBase64, mimeType: mimeType || "image/jpeg" }];
+
+      primaryImage = normalizedImages[0];
+      if (primaryImage?.imageBase64) {
+        imageBuffer = Buffer.from(primaryImage.imageBase64, "base64");
+      }
+    }
 
     const finalState = await runTriagePipeline({
-      text,
+      text: text.trim(),
       imageBuffer,
-      imageBase64: primaryImage.imageBase64,
-      mimeType: primaryImage.mimeType || "image/jpeg",
+      imageBase64: primaryImage?.imageBase64 || null,
+      mimeType: primaryImage?.mimeType || mimeType || "image/jpeg",
       claimedCoords,
       isTestTrace: isTestTrace === true,
       images: normalizedImages.map((entry) => ({
         ...entry,
-        imageBuffer: Buffer.from(entry.imageBase64, "base64"),
+        imageBuffer: entry.imageBase64 ? Buffer.from(entry.imageBase64, "base64") : null,
       })),
     });
 
@@ -63,5 +73,6 @@ export async function authorizeDisbursement(req, res) {
     .select();
 
   if (error) return res.status(500).json({ error: error.message });
+  logDispatcherAction({ sessionId, action, result: data });
   res.json(data);
 }

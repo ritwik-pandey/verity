@@ -8,9 +8,14 @@ import { enforceParityGate } from "../middleware/prismSafety.js";
 import { appendTraceStep, closeTrace } from "../config/prism.js";
 import { initialState } from "./state.js";
 import { buildComplianceAudit, buildTestComplianceAudit, classifyIntent } from "../middleware/complianceAudit.js";
+import * as agentLogger from "../utils/agentLogger.js";
 
 async function intentClassificationNode(state) {
   const intent = classifyIntent(state.rawInput);
+  agentLogger.logIntentAgent({
+    input: state.rawInput?.text,
+    output: intent,
+  });
   await appendTraceStep(state.sessionId, {
     step: "intent_classification",
     output: intent,
@@ -25,6 +30,10 @@ function routeAfterIntent(state) {
 
 async function testVerificationNode(state) {
   const compliance = buildTestComplianceAudit(state.intent);
+  agentLogger.logTestVerification({
+    input: state.rawInput,
+    output: compliance,
+  });
   await appendTraceStep(state.sessionId, {
     step: "compliance_audit",
     output: compliance,
@@ -42,6 +51,13 @@ async function fraudToolNode(state) {
     images: state.rawInput.images || [],
     sessionId: state.sessionId,
   });
+  agentLogger.logFraudAgent({
+    input: {
+      claimedText: state.rawInput.text,
+      imagesCount: state.rawInput.images?.length || (state.rawInput.imageBase64 ? 1 : 0),
+    },
+    output: fraudResult,
+  });
   await appendTraceStep(state.sessionId, {
     step: "fraud_verification",
     output: fraudResult,
@@ -50,9 +66,39 @@ async function fraudToolNode(state) {
   return { ...state, fraudResult, fraudBlocked: fraudResult.shortCircuited };
 }
 
+async function scoreNode(state) {
+  const scoredState = node3SeverityPayoutScorer(state);
+  agentLogger.logScoringAgent({
+    input: {
+      riskCategory: state.fraudResult?.riskCategory,
+      fraudRiskScore: state.fraudResult?.fraudRiskScore,
+    },
+    output: {
+      severity: scoredState.severity,
+      payout: scoredState.payout,
+      status: scoredState.status,
+    },
+  });
+  await appendTraceStep(state.sessionId, {
+    step: "severity_payout_scoring",
+    model: "deterministic-scorer",
+    output: {
+      severity: scoredState.severity,
+      payout: scoredState.payout,
+      status: scoredState.status,
+    },
+    metadata: { severity: scoredState.severity, payout: scoredState.payout },
+  });
+  return scoredState;
+}
+
 async function parityGateNode(state) {
   if (state.status === "flagged") {
     const gateResult = { blocked: false, skipped: true, reason: "Skipped because fraud verification blocked the claim." };
+    agentLogger.logParityGate({
+      input: { proposedPayout: state.payout, extracted: state.extracted },
+      output: gateResult,
+    });
     await appendTraceStep(state.sessionId, {
       step: "parity_gate",
       output: gateResult,
@@ -64,6 +110,10 @@ async function parityGateNode(state) {
     sessionId: state.sessionId,
     extractedParams: state.extracted,
     proposedPayout: state.payout,
+  });
+  agentLogger.logParityGate({
+    input: { proposedPayout: state.payout, extracted: state.extracted },
+    output: gateResult,
   });
   await appendTraceStep(state.sessionId, {
     step: "parity_gate",
@@ -85,7 +135,7 @@ export function buildGraph() {
   graph.addNode("testVerification", testVerificationNode);
   graph.addNode("extract", node2DialectNeutralExtraction);
   graph.addNode("fraudCheck", fraudToolNode);
-  graph.addNode("score", node3SeverityPayoutScorer);
+  graph.addNode("score", scoreNode);
   graph.addNode("parityGateCheck", parityGateNode);
   graph.addNode("complianceAudit", complianceAuditNode);
 
@@ -109,6 +159,7 @@ export async function runTriagePipeline(rawInput) {
   const startTime = Date.now();
   const app = buildGraph();
   const sessionId = rawInput.sessionId || randomUUID();
+  agentLogger.logPipelineStart(sessionId, rawInput);
   const startState = {
     ...initialState,
     sessionId,
@@ -138,11 +189,21 @@ export async function runTriagePipeline(rawInput) {
     inputSummary: rawInput.text,
   });
 
+  agentLogger.logPipelineComplete(finalState.sessionId || sessionId, finalState, totalLatencyMs);
+
   return finalState;
 }
 
 async function complianceAuditNode(state) {
   const compliance = buildComplianceAudit(state);
+  agentLogger.logComplianceAgent({
+    input: {
+      status: state.status,
+      severity: state.severity,
+      payout: state.payout,
+    },
+    output: compliance,
+  });
   await appendTraceStep(state.sessionId, {
     step: "compliance_audit",
     output: compliance,

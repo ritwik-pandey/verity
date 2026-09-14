@@ -3,6 +3,7 @@ import "dotenv/config";
 import { z } from "zod";
 
 import { appendTraceStep } from "../../../config/prism.js";
+import { logExtractionAgent } from "../../../utils/agentLogger.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -230,6 +231,14 @@ export async function node2DialectNeutralExtraction(state) {
   }
 
   const latencyMs = Date.now() - start;
+
+  logExtractionAgent({
+    input: extractedInputText,
+    model: "Qwen 3.8 27B (Groq)",
+    output: extracted,
+    latencyMs,
+    audioSource: Boolean(state.rawInput?.audio),
+  });
 
   if (state.sessionId) {
     await appendTraceStep(state.sessionId, {
