@@ -4,6 +4,7 @@ export const initialState = {
     text: "",
     imageUrl: "",
     claimedCoords: null,
+    images: [],
     submittedAt: null,
   },
   extracted: null,       // Node 2 output

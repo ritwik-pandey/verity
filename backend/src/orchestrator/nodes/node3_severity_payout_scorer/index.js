@@ -4,7 +4,11 @@ const MAX_GRANT = 2000;
 export function node3SeverityPayoutScorer(state) {
   const { extracted, fraudResult } = state;
 
-  if (fraudResult?.shortCircuited || fraudResult?.fraudRiskScore >= 0.75) {
+  if (
+    fraudResult?.shortCircuited ||
+    fraudResult?.riskCategory === "HARD_BLOCK" ||
+    fraudResult?.fraudRiskScore >= 0.75
+  ) {
     return {
       ...state,
       status: "flagged",

@@ -3,18 +3,37 @@ import { supabase } from "../config/supabase.js";
 
 export async function submitClaim(req, res) {
   try {
-    const { text, imageBase64, mimeType, claimedCoords } = req.body;
-    if (!text || !imageBase64) {
-      return res.status(400).json({ error: "text and imageBase64 are required" });
+    const { text, imageBase64, mimeType, claimedCoords, images } = req.body;
+
+    if (!text || (!imageBase64 && !(Array.isArray(images) && images.length > 0))) {
+      return res.status(400).json({ error: "text and at least one image are required" });
     }
 
-    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const normalizedImages = Array.isArray(images) && images.length > 0
+      ? images.map((entry) => ({
+          imageBase64: entry.imageBase64 || entry.base64,
+          mimeType: entry.mimeType || mimeType || "image/jpeg",
+        }))
+      : Array.isArray(imageBase64)
+        ? imageBase64.map((entry) => ({
+            imageBase64: typeof entry === "string" ? entry : entry.imageBase64,
+            mimeType: typeof entry === "string" ? mimeType || "image/jpeg" : entry.mimeType || mimeType || "image/jpeg",
+          }))
+        : [{ imageBase64, mimeType: mimeType || "image/jpeg" }];
+
+    const primaryImage = normalizedImages[0];
+    const imageBuffer = Buffer.from(primaryImage.imageBase64, "base64");
+
     const finalState = await runTriagePipeline({
       text,
       imageBuffer,
-      imageBase64,
-      mimeType: mimeType || "image/jpeg",
+      imageBase64: primaryImage.imageBase64,
+      mimeType: primaryImage.mimeType || "image/jpeg",
       claimedCoords,
+      images: normalizedImages.map((entry) => ({
+        ...entry,
+        imageBuffer: Buffer.from(entry.imageBase64, "base64"),
+      })),
     });
 
     await supabase.from("claims").insert({
