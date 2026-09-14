@@ -2,6 +2,8 @@ export const initialState = {
   sessionId: null,
   rawInput: {
     text: "",
+    audio: null,
+    language: null,
     imageUrl: "",
     claimedCoords: null,
     images: [],
