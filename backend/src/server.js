@@ -5,5 +5,5 @@ const app = createApp();
 const PORT = process.env.PORT || 4000;
 
 app.listen(PORT, () => {
-  console.log(`EquityAid backend listening on :${PORT}`);
+  console.log(`Verity backend listening on :${PORT}`);
 });
