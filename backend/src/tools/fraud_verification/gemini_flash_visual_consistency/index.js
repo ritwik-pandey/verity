@@ -8,7 +8,7 @@ if (!apiKey) {
 }
 
 const genAI = new GoogleGenerativeAI(apiKey);
-const configuredModel = process.env.GOOGLE_GEMINI_MODEL || "gemini-3.5-flash";
+const configuredModel = process.env.GOOGLE_GEMINI_MODEL || "gemini-2.5-flash-lite";
 
 import { appendTraceStep } from "../../../config/prism.js";
 
@@ -24,9 +24,12 @@ Analyze the attached image and respond ONLY with JSON:
   "discrepancyNotes": "<short note if image doesn't match claim, else empty string>"
 }`;
 
-  const modelsToTry = [configuredModel, "gemini-3.5-flash-lite", "gemini-3.5-flash"].filter(
-    (m, i, arr) => arr.indexOf(m) === i
-  );
+  const modelsToTry = [
+    configuredModel,
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-lite-latest",
+  ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   for (const modelName of modelsToTry) {
     try {
@@ -44,7 +47,7 @@ Analyze the attached image and respond ONLY with JSON:
         if (sessionId) {
           await appendTraceStep(sessionId, {
             step: "visual_consistency_check",
-            model: "gemini-3.5-flash",
+            model: modelName,
             latencyMs,
             output: parsed,
             metadata: { claimedDamageText },
