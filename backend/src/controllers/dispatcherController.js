@@ -3,7 +3,7 @@ import { supabase } from "../config/supabase.js";
 
 export async function submitClaim(req, res) {
   try {
-    const { text, imageBase64, mimeType, claimedCoords, images } = req.body;
+    const { text, imageBase64, mimeType, claimedCoords, images, isTestTrace } = req.body;
 
     if (!text || (!imageBase64 && !(Array.isArray(images) && images.length > 0))) {
       return res.status(400).json({ error: "text and at least one image are required" });
@@ -30,6 +30,7 @@ export async function submitClaim(req, res) {
       imageBase64: primaryImage.imageBase64,
       mimeType: primaryImage.mimeType || "image/jpeg",
       claimedCoords,
+      isTestTrace: isTestTrace === true,
       images: normalizedImages.map((entry) => ({
         ...entry,
         imageBuffer: Buffer.from(entry.imageBase64, "base64"),
