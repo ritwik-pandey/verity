@@ -29,6 +29,7 @@ export async function node2DialectNeutralExtraction(state) {
   const completion = await groq.chat.completions.create({
     model: "qwen/qwen3.8-27b",
     temperature: 0,
+    max_tokens: 250,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: state.rawInput.text },
