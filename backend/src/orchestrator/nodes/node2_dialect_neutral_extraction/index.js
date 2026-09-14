@@ -22,7 +22,10 @@ Output: {"waterDepthFt": null, "structuralIntegrity": "unknown", "entrapmentStat
 Respond ONLY with JSON matching this schema:
 {"waterDepthFt": number|null, "structuralIntegrity": "intact"|"damaged"|"destroyed"|"unknown", "entrapmentStatus": boolean, "dependantsAtRisk": string[], "evacuationNeeded": boolean}`;
 
+import { appendTraceStep } from "../../../config/prism.js";
+
 export async function node2DialectNeutralExtraction(state) {
+  const start = Date.now();
   const completion = await groq.chat.completions.create({
     model: "qwen/qwen3.8-27b",
     temperature: 0,
@@ -34,6 +37,17 @@ export async function node2DialectNeutralExtraction(state) {
 
   const raw = completion.choices[0].message.content.replace(/```json|```/g, "").trim();
   const extracted = JSON.parse(raw);
+  const latencyMs = Date.now() - start;
+
+  if (state.sessionId) {
+    await appendTraceStep(state.sessionId, {
+      step: "dialect_neutral_extraction",
+      model: "qwen/qwen3.8-27b",
+      latencyMs,
+      output: extracted,
+      metadata: { input_text: state.rawInput.text },
+    });
+  }
 
   return { ...state, extracted };
 }

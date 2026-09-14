@@ -33,13 +33,23 @@ async function parityGateNode(state) {
   };
 }
 
+async function scoringNode(state) {
+  const nextState = node3SeverityPayoutScorer(state);
+  await appendTraceStep(state.sessionId, {
+    step: "severity_payout_scoring",
+    model: "verity-scoring-engine",
+    output: { severity: nextState.severity, payout: nextState.payout, status: nextState.status },
+  });
+  return nextState;
+}
+
 export function buildGraph() {
   const graph = new StateGraph({ channels: initialState });
 
   graph.addNode("ingest", node1RawIngestion);
   graph.addNode("extract", node2DialectNeutralExtraction);
   graph.addNode("fraudCheck", fraudToolNode);
-  graph.addNode("score", node3SeverityPayoutScorer);
+  graph.addNode("score", scoringNode);
   graph.addNode("parityGateCheck", parityGateNode);
 
   graph.setEntryPoint("ingest");
@@ -54,10 +64,18 @@ export function buildGraph() {
 
 export async function runTriagePipeline(rawInput) {
   const app = buildGraph();
-  const startState = { ...initialState, rawInput };
-  await initTrace(startState.sessionId, rawInput);
+  const sessionId = rawInput.sessionId || crypto.randomUUID();
+  const startState = {
+    ...initialState,
+    sessionId,
+    rawInput: {
+      ...rawInput,
+      submittedAt: new Date().toISOString(),
+    },
+  };
+  await initTrace(sessionId, rawInput);
   const finalState = await app.invoke(startState);
-  await closeTrace(finalState.sessionId, {
+  await closeTrace(finalState.sessionId || sessionId, {
     status: finalState.status,
     payout: finalState.payout,
   });
