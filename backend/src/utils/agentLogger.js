@@ -102,7 +102,14 @@ export function logFraudAgent({ input, output }) {
   // Layer 2: Web / pHash
   const web = output?.layers?.webDetection;
   console.log(`${C.bCyan}│${C.reset}     ${C.bold}Layer 2 [Plagiarism & Deduplication]${C.reset}:`);
-  console.log(`${C.bCyan}│${C.reset}       • Duplicate/Stock Match: ${web?.isLikelyStockOrReused ? C.bRed + "⚠️ MATCH FOUND (Suspected Reused/Stock Image)" : C.bGreen + "NONE DETECTED (Unique Evidence)"}${C.reset}`);
+  if (!web || web.skipped) {
+    console.log(`${C.bCyan}│${C.reset}       • Duplicate/Stock Match: ${C.yellow}SKIPPED (${web?.message || "Not analyzed"})${C.reset}`);
+  } else if (web.isLikelyStockOrReused) {
+    const matchDetail = web.matchingPages?.length ? ` (${web.matchingPages[0]})` : "";
+    console.log(`${C.bCyan}│${C.reset}       • Duplicate/Stock Match: ${C.bRed}⚠️ MATCH DETECTED${matchDetail}${C.reset}`);
+  } else {
+    console.log(`${C.bCyan}│${C.reset}       • Duplicate/Stock Match: ${C.bGreen}PASSED (${web.message || "Unique Evidence"})${C.reset}`);
+  }
 
   // Layer 3: Gemini Multimodal Vision
   const vision = output?.layers?.visualConsistency;
@@ -110,10 +117,17 @@ export function logFraudAgent({ input, output }) {
     const consistencyPct = Math.round((vision.consistencyScore || 0) * 100);
     console.log(`${C.bCyan}│${C.reset}     ${C.bold}Layer 3 [Gemini Flash Multimodal Forensics]${C.reset}:`);
     console.log(`${C.bCyan}│${C.reset}       • Visual Consistency: ${consistencyPct >= 70 ? C.bGreen : consistencyPct >= 40 ? C.bYellow : C.bRed}${consistencyPct}% match with text description${C.reset}`);
+    console.log(`${C.bCyan}│${C.reset}       • Web/Stock Imagery : ${vision.isLikelyStockOrWebImage ? C.bRed + "DETECTED (Suspected Stock/Web/Screenshot Photo)" : C.green + "None (Authentic Field Photo)"}${C.reset}`);
+    if (vision.webOrStockIndicators?.length) {
+      console.log(`${C.bCyan}│${C.reset}         ${C.bYellow}└─ Indicators     : ${vision.webOrStockIndicators.join("; ")}${C.reset}`);
+    }
     console.log(`${C.bCyan}│${C.reset}       • AI-Gen Artifacts  : ${vision.generativeArtifactsDetected ? C.bRed + "DETECTED (Synthetic Image)" : C.green + "None (Authentic Photo)"}${C.reset}`);
     if (vision.discrepancyNotes) {
       console.log(`${C.bCyan}│${C.reset}       • Forensic Notes    : ${C.white}${vision.discrepancyNotes}${C.reset}`);
     }
+  } else {
+    console.log(`${C.bCyan}│${C.reset}     ${C.bold}Layer 3 [Gemini Flash Multimodal Forensics]${C.reset}:`);
+    console.log(`${C.bCyan}│${C.reset}       • Status            : ${C.yellow}SKIPPED / NOT EXECUTED${C.reset}`);
   }
 
   // Overall Risk

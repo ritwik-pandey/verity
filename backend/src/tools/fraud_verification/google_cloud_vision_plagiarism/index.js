@@ -1,4 +1,29 @@
 import { imageHash } from "image-hash";
+import fs from "fs";
+import "dotenv/config";
+
+// In-memory historical claim hash store for cross-claim deduplication
+const historicalClaimHashes = [];
+
+let visionClient = null;
+let visionClientChecked = false;
+
+async function getVisionClient() {
+  if (visionClientChecked) return visionClient;
+  visionClientChecked = true;
+
+  const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (credPath && fs.existsSync(credPath)) {
+    try {
+      const vision = await import("@google-cloud/vision");
+      visionClient = new vision.default.ImageAnnotatorClient();
+      console.log(" Google Cloud Vision client initialized with credentials:", credPath);
+    } catch (err) {
+      console.warn("Failed to initialize Google Cloud Vision client:", err.message);
+    }
+  }
+  return visionClient;
+}
 
 function normalizeInputs(imageInputs) {
   const normalized = Array.isArray(imageInputs) ? imageInputs : [imageInputs];
@@ -76,28 +101,54 @@ function analyzeDuplicatePairs(hashes) {
     }
   }
 
-  return {
-    duplicatePairs,
-    fullMatchCount: duplicatePairs.length,
-    partialMatchCount: 0,
-    isLikelyStockOrReused: duplicatePairs.length > 0,
-    matchingPages: duplicatePairs.map(
-      ({ left, right, distance }) => `Image ${left} vs Image ${right} (pHash distance ${distance})`
-    ),
-  };
+  return duplicatePairs;
 }
 
-export async function checkReverseImageMatch(imageInputs) {
+function checkHistoricalDuplicates(hashes) {
+  const historicalMatches = [];
+
+  for (const item of hashes) {
+    for (const record of historicalClaimHashes) {
+      const distance = hammingDistance(item.hash, record.hash);
+      if (distance <= 8) {
+        historicalMatches.push({
+          imageIndex: item.index + 1,
+          matchedSessionId: record.sessionId,
+          distance,
+          submittedAt: record.timestamp,
+        });
+      }
+    }
+  }
+
+  return historicalMatches;
+}
+
+export function registerClaimHashes(sessionId, hashes) {
+  if (!sessionId || !Array.isArray(hashes)) return;
+  for (const h of hashes) {
+    if (h?.hash) {
+      historicalClaimHashes.push({
+        hash: h.hash,
+        sessionId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+}
+
+export async function checkReverseImageMatch(imageInputs, sessionId = null) {
   const normalized = normalizeInputs(imageInputs);
 
   if (normalized.length === 0) {
     return {
       isLikelyStockOrReused: false,
+      matchType: "none",
       fullMatchCount: 0,
       partialMatchCount: 0,
       matchingPages: [],
       skipped: true,
-      message: "No image input supplied for local pHash analysis.",
+      message: "No image input supplied for deduplication analysis.",
     };
   }
 
@@ -109,26 +160,98 @@ export async function checkReverseImageMatch(imageInputs) {
       }))
     );
 
-    const duplicateAnalysis = analyzeDuplicatePairs(hashes);
+    // 1. Check Google Cloud Vision if available
+    const gcpClient = await getVisionClient();
+    if (gcpClient) {
+      try {
+        const [gcpRes] = await gcpClient.webDetection({
+          image: { content: normalized[0].buffer },
+        });
+        const web = gcpRes.webDetection;
+        const fullMatches = web?.fullMatchingImages || [];
+        const partialMatches = web?.partialMatchingImages || [];
+        const pages = web?.pagesWithMatchingImages || [];
+
+        const webMatchDetected = fullMatches.length > 0 || partialMatches.length > 0;
+
+        if (webMatchDetected) {
+          return {
+            isLikelyStockOrReused: true,
+            matchType: "web_match",
+            analysisMethod: "google_cloud_vision_web",
+            fullMatchCount: fullMatches.length,
+            partialMatchCount: partialMatches.length,
+            matchingPages: pages.slice(0, 5).map((p) => p.url),
+            webEntities: (web?.webEntities || []).slice(0, 5).map((e) => e.description),
+            skipped: false,
+            message: `Google Cloud Vision found ${fullMatches.length} full and ${partialMatches.length} partial matching images on the public web.`,
+          };
+        }
+      } catch (gcpErr) {
+        console.warn("Google Cloud Vision webDetection failed, falling back to pHash:", gcpErr.message);
+      }
+    }
+
+    // 2. Intra-batch duplicate check
+    const batchDuplicates = analyzeDuplicatePairs(hashes);
+
+    // 3. Historical cross-claim duplicate check
+    const historicalMatches = checkHistoricalDuplicates(hashes);
+
+    // Register these hashes for subsequent claims
+    if (sessionId) {
+      registerClaimHashes(sessionId, hashes);
+    }
+
+    const isReused = batchDuplicates.length > 0 || historicalMatches.length > 0;
+    const matchType = historicalMatches.length > 0
+      ? "historical_claim_duplicate"
+      : batchDuplicates.length > 0
+        ? "batch_duplicate"
+        : "none";
+
+    const matchingPages = [
+      ...batchDuplicates.map(
+        ({ left, right, distance }) => `Duplicate in batch: Photo ${left} vs Photo ${right} (pHash distance: ${distance})`
+      ),
+      ...historicalMatches.map(
+        ({ imageIndex, matchedSessionId, distance }) => `Recycled from Claim ${matchedSessionId.slice(0, 8)}... (pHash distance: ${distance})`
+      ),
+    ];
+
+    let statusMessage = "Local pHash & historical fingerprint generated (unique within claims database).";
+    if (historicalMatches.length > 0) {
+      statusMessage = `Recycled image alert: photo matches previous Claim ${historicalMatches[0].matchedSessionId.slice(0, 8)}.`;
+    } else if (batchDuplicates.length > 0) {
+      statusMessage = "Duplicate photos detected within the same submitted claim batch.";
+    } else if (normalized.length > 1) {
+      statusMessage = "All submitted photos in this claim batch are visually unique.";
+    }
 
     return {
-      ...duplicateAnalysis,
+      isLikelyStockOrReused: isReused,
+      matchType,
+      analysisMethod: "phash_cross_claim_and_batch",
+      duplicatePairs: batchDuplicates,
+      historicalMatches,
+      fullMatchCount: isReused ? 1 : 0,
+      partialMatchCount: 0,
+      matchingPages,
       skipped: false,
-      message:
-        normalized.length > 1
-          ? "Local pHash duplicate analysis completed for the submitted evidence set."
-          : "Local pHash hash generated; no external web-match dataset was used.",
+      message: statusMessage,
       inputCount: normalized.length,
+      hashes: hashes.map((h) => h.hash),
     };
   } catch (error) {
-    console.warn("Local pHash analysis failed:", error.message);
+    console.warn("Deduplication analysis failed:", error.message);
     return {
       isLikelyStockOrReused: false,
+      matchType: "none",
       fullMatchCount: 0,
       partialMatchCount: 0,
       matchingPages: [],
       skipped: true,
-      message: `Local pHash analysis unavailable (${error.message}); using local fallback.`,
+      message: `Deduplication analysis unavailable (${error.message}); using local fallback.`,
     };
   }
 }

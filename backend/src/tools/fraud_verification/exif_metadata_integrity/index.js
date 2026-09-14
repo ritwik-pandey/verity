@@ -281,9 +281,10 @@ export async function checkExifIntegrity(imageBuffer) {
       timestamp: null,
       withinBounds: null,
       withinAgeLimit: null,
-      hardFail: true,
+      hardFail: false,
+      missingExif: true,
       reasons: [`Unable to parse EXIF metadata: ${error.message || "unknown file format"}`],
-      metadataWarnings: [],
+      metadataWarnings: ["No readable EXIF metadata"],
       tamperingIndicators: [],
       softwareEditingDetected: false,
       geofence: {
@@ -327,6 +328,7 @@ export async function checkExifIntegrity(imageBuffer) {
     withinBounds: null,
     withinAgeLimit: timestampResult.withinAgeLimit,
     hardFail: false,
+    missingExif: false,
     reasons: [],
     metadataWarnings: [],
     tamperingIndicators: [],
@@ -340,8 +342,10 @@ export async function checkExifIntegrity(imageBuffer) {
   };
 
   if (!data) {
-    result.hardFail = true;
-    result.reasons.push("No EXIF data found (possible screenshot/edited image)");
+    result.hardFail = false;
+    result.missingExif = true;
+    result.reasons.push("No EXIF metadata attached (common for web downloads, messaging apps, or screenshots)");
+    result.metadataWarnings.push("Missing camera EXIF metadata");
     return result;
   }
 
@@ -389,9 +393,11 @@ export async function checkExifIntegrity(imageBuffer) {
   const detectedSoftware = extractSoftwareIndicators(data);
   if (detectedSoftware.length > 0) {
     result.softwareEditingDetected = true;
+    result.hardFail = true;
     result.tamperingIndicators = detectedSoftware.map(
       (indicator) => `Editing software indicator detected: ${indicator}`
     );
+    result.reasons.push(...result.tamperingIndicators);
   }
 
   if (!data.Make && !data.Model && !data.LensModel) {

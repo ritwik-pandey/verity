@@ -98,36 +98,15 @@ export async function verifyClaimEvidence({ imageBuffer, imageBase64, mimeType, 
     };
   }
 
-  const exifResults = await Promise.all(
-    evidencePhotos.map(async ({ imageBuffer: buffer, imageBase64: base64, mimeType: mediaType }, index) => {
-      const exifResult = await checkExifIntegrity(buffer);
-      return { ...exifResult, index, imageBase64: base64, mimeType: mediaType };
-    })
-  );
-
-  const primaryExif = exifResults[0];
-  const multiImageConsistency = findCrossImageIssues(exifResults);
-
-  const anyExifHardFail = exifResults.some((result) => result.hardFail);
-  if (anyExifHardFail) {
-    return {
-      fraudRiskScore: 1,
-      riskCategory: "HARD_BLOCK",
-      shortCircuited: true,
-      validationFlags: exifResults.flatMap((result) =>
-        result.reasons.map((reason) => `Image ${result.index + 1}: ${reason}`)
-      ),
-      layers: {
-        exif: exifResults,
-        webDetection: null,
-        visualConsistency: null,
-        multiImageConsistency,
-      },
-    };
-  }
-
-  const [webResult, visionResult] = await Promise.all([
-    checkReverseImageMatch(evidencePhotos),
+  // Execute all 3 forensic layers concurrently
+  const [exifResults, webResult, visionResult] = await Promise.all([
+    Promise.all(
+      evidencePhotos.map(async ({ imageBuffer: buffer, imageBase64: base64, mimeType: mediaType }, index) => {
+        const exifResult = await checkExifIntegrity(buffer);
+        return { ...exifResult, index, imageBase64: base64, mimeType: mediaType };
+      })
+    ),
+    checkReverseImageMatch(evidencePhotos, sessionId),
     checkVisualConsistency({
       imageBase64: evidencePhotos[0].imageBase64,
       mimeType: evidencePhotos[0].mimeType,
@@ -136,21 +115,36 @@ export async function verifyClaimEvidence({ imageBuffer, imageBase64, mimeType, 
     }),
   ]);
 
-  const riskAssessment = computeRiskScore({ exifResult: primaryExif, webResult, visionResult, multiImageConsistency });
+  const primaryExif = exifResults[0];
+  const multiImageConsistency = findCrossImageIssues(exifResults);
+  const anyExifHardFail = exifResults.some((result) => result.hardFail);
+
+  const riskAssessment = computeRiskScore({
+    exifResult: primaryExif,
+    webResult,
+    visionResult,
+    multiImageConsistency,
+    anyExifHardFail,
+  });
+
+  const validationFlags = [
+    ...primaryExif.reasons,
+    ...primaryExif.tamperingIndicators,
+    ...primaryExif.metadataWarnings,
+    ...(webResult.isLikelyStockOrReused ? [webResult.message || "Possible reused or stock image"] : []),
+    ...(visionResult.isLikelyStockOrWebImage
+      ? [`Suspected stock/web photo: ${visionResult.webOrStockIndicators?.join(", ") || "web artifacts detected"}`]
+      : []),
+    ...(visionResult.generativeArtifactsDetected ? ["Possible AI-generated image (synthetic artifacts)"] : []),
+    ...(visionResult.discrepancyNotes ? [visionResult.discrepancyNotes] : []),
+    ...multiImageConsistency.issues,
+  ];
 
   return {
     fraudRiskScore: riskAssessment.score,
     riskCategory: riskAssessment.category,
-    shortCircuited: false,
-    validationFlags: [
-      ...primaryExif.reasons,
-      ...primaryExif.tamperingIndicators,
-      ...primaryExif.metadataWarnings,
-      ...(webResult.isLikelyStockOrReused ? ["Possible reused/stock image"] : []),
-      ...(visionResult.generativeArtifactsDetected ? ["Possible AI-generated image"] : []),
-      ...(visionResult.discrepancyNotes ? [visionResult.discrepancyNotes] : []),
-      ...multiImageConsistency.issues,
-    ],
+    shortCircuited: riskAssessment.hardBlockTriggered,
+    validationFlags: [...new Set(validationFlags)].filter(Boolean),
     layers: {
       exif: exifResults,
       webDetection: webResult,
@@ -160,30 +154,53 @@ export async function verifyClaimEvidence({ imageBuffer, imageBase64, mimeType, 
   };
 }
 
-function computeRiskScore({ exifResult, webResult, visionResult, multiImageConsistency }) {
-  let score = 0.08;
+function computeRiskScore({ exifResult, webResult, visionResult, multiImageConsistency, anyExifHardFail }) {
+  // If an explicit hard fail occurred (e.g. GPS out of disaster zone, or software editing like Photoshop detected)
+  if (anyExifHardFail) {
+    return { score: 1.0, category: "HARD_BLOCK", hardBlockTriggered: true };
+  }
 
-  if (!exifResult.hasGps) score += 0.12;
-  if (!exifResult.hasTimestamp) score += 0.08;
-  if (exifResult.withinBounds === false) score += 0.22;
-  if (exifResult.withinAgeLimit === false) score += 0.18;
-  if (exifResult.tamperingIndicators.length > 0) score += 0.14;
-  if (exifResult.metadataWarnings.length > 0) score += 0.06;
-  if (webResult.isLikelyStockOrReused) score += 0.22;
-  if (visionResult.generativeArtifactsDetected) score += 0.18;
-  score += (1 - visionResult.consistencyScore) * 0.18;
+  let score = 0.05;
+
+  // Layer 1: EXIF signals
+  if (exifResult.missingExif) {
+    score += 0.22; // Suspicious (common in web downloads / screenshots), flags for review
+  } else {
+    if (!exifResult.hasGps) score += 0.10;
+    if (!exifResult.hasTimestamp) score += 0.06;
+  }
+  if (exifResult.withinBounds === false) score += 0.35;
+  if (exifResult.withinAgeLimit === false) score += 0.25;
+  if (exifResult.tamperingIndicators.length > 0) score += 0.30;
+  if (exifResult.metadataWarnings.length > 0) score += 0.05;
+
+  // Layer 2: Deduplication / Reverse Match
+  if (webResult.isLikelyStockOrReused) {
+    score += 0.45; // High fraud signal: recycled claim or web match
+  }
+
+  // Layer 3: Gemini Multimodal Forensics
+  if (visionResult.isLikelyStockOrWebImage) {
+    score += 0.40; // High fraud signal: stock photo, screenshot, or internet image detected
+  }
+  if (visionResult.generativeArtifactsDetected) {
+    score += 0.35; // AI-generated synthetic disaster image
+  }
+  if (visionResult.consistencyScore != null) {
+    score += (1 - visionResult.consistencyScore) * 0.20;
+  }
 
   if (multiImageConsistency?.issues?.length) {
-    score += Math.min(multiImageConsistency.issues.length * 0.12, 0.2);
+    score += Math.min(multiImageConsistency.issues.length * 0.15, 0.25);
   }
 
   score = Math.min(Math.max(score, 0), 1);
 
   let category = "LOW_RISK";
-  if (score >= 0.75) category = "HARD_BLOCK";
+  if (score >= BLOCK_THRESHOLD) category = "HARD_BLOCK";
   else if (score >= 0.35) category = "FLAG_MANUAL_REVIEW";
 
-  return { score, category };
+  return { score: Number(score.toFixed(2)), category, hardBlockTriggered: category === "HARD_BLOCK" };
 }
 
 export { BLOCK_THRESHOLD };
